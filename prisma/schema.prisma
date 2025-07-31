@@ -1,0 +1,44 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+    provider = "prisma-client-js"
+}
+
+datasource db {
+    provider = "postgresql"
+    url      = env("DATABASE_URL")
+}
+
+model Post {
+    id        Int      @id @default(autoincrement())
+    name      String
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+
+    @@index([name])
+}
+
+model CV {
+    id         String   @id @default(cuid())
+    fullName   String
+    email      String
+    phone      String?
+    skills     String?
+    experience String?
+    fileName   String
+    fileUrl    String
+    
+    // AI validation fields
+    validationStatus  String @default("pending") // pending, validating, validated, failed
+    validationResults Json?  // detailed field-by-field validation results
+    validationErrors  String[] @default([]) // array of validation errors
+    validatedAt      DateTime? // when validation was completed
+    
+    createdAt  DateTime @default(now())
+    updatedAt  DateTime @updatedAt
+
+    @@index([email])
+    @@index([createdAt])
+    @@index([validationStatus])
+}
