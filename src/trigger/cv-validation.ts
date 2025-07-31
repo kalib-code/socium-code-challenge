@@ -68,24 +68,24 @@ export const validateCvDataTask = task({
 
       // Determine if this is a PDF or image based on URL
       const isPdf = validatedPayload.fileUrl.toLowerCase().includes('.pdf') || validatedPayload.fileUrl.toLowerCase().includes('pdf');
-      
-      let requestBody: any;
+
+      let requestBody: Record<string, unknown>;
 
       if (isPdf) {
         // Handle PDF files - download and convert to base64
         logger.log("Processing PDF file", { fileUrl: validatedPayload.fileUrl });
-        
+
         // Download PDF from MinIO
         const urlParts = validatedPayload.fileUrl.split('/');
         const fileName = urlParts[urlParts.length - 1];
-        
+
         let pdfBuffer: Buffer;
-        
+
         try {
           // Try public URL first
           logger.log("Downloading PDF from URL", { url: validatedPayload.fileUrl });
           const response = await fetch(validatedPayload.fileUrl);
-          
+
           if (response.ok) {
             const arrayBuffer = await response.arrayBuffer();
             pdfBuffer = Buffer.from(arrayBuffer);
@@ -95,11 +95,11 @@ export const validateCvDataTask = task({
           }
         } catch (publicError) {
           const errorMessage = publicError instanceof Error ? publicError.message : 'Unknown error';
-          logger.log("Public access failed, trying authenticated MinIO access", { 
+          logger.log("Public access failed, trying authenticated MinIO access", {
             error: errorMessage,
-            fileName 
+            fileName
           });
-          
+
           // Use authenticated MinIO client access
           const { Client } = await import('minio');
           const minioClient = new Client({
@@ -109,15 +109,15 @@ export const validateCvDataTask = task({
             accessKey: process.env.MINIO_ROOT_USER ?? 'minioadmin',
             secretKey: process.env.MINIO_ROOT_PASSWORD ?? 'minioadmin',
           });
-          
+
           // Get object from MinIO directly
           const stream = await minioClient.getObject('cvs', fileName!);
           const chunks: Buffer[] = [];
-          
+
           for await (const chunk of stream) {
             chunks.push(chunk as Buffer);
           }
-          
+
           pdfBuffer = Buffer.concat(chunks);
           logger.log("Downloaded PDF via authenticated MinIO access", { size: pdfBuffer.length });
         }
@@ -139,7 +139,7 @@ export const validateCvDataTask = task({
                 {
                   type: 'file',
                   file: {
-                    filename: fileName || 'document.pdf',
+                    filename: fileName ?? 'document.pdf',
                     file_data: base64PDF,
                   },
                 },
@@ -151,7 +151,7 @@ export const validateCvDataTask = task({
       } else {
         // Handle image files - use image_url format
         logger.log("Processing image file", { fileUrl: validatedPayload.fileUrl });
-        
+
         requestBody = {
           model: 'google/gemini-2.0-flash-001',
           messages: [
@@ -188,15 +188,21 @@ export const validateCvDataTask = task({
 
       if (!response.ok) {
         const errorText = await response.text();
-        logger.error("OpenRouter API error", { 
-          status: response.status, 
+        logger.error("OpenRouter API error", {
+          status: response.status,
           statusText: response.statusText,
-          error: errorText 
+          error: errorText
         });
         throw new Error(`OpenRouter API error: ${response.status} ${response.statusText} - ${errorText}`);
       }
 
-      const completion = await response.json();
+      const completion = await response.json() as {
+        choices: Array<{
+          message: {
+            content: string;
+          };
+        }>;
+      };
 
       const aiResponse = completion.choices[0]?.message?.content;
 
@@ -208,14 +214,14 @@ export const validateCvDataTask = task({
 
       // Clean and parse AI response - handle markdown code blocks
       let cleanedResponse = aiResponse.trim();
-      
+
       // Remove markdown code blocks if present
       if (cleanedResponse.startsWith('```json')) {
         cleanedResponse = cleanedResponse.replace(/```json\s*/, '').replace(/\s*```$/, '');
       } else if (cleanedResponse.startsWith('```')) {
         cleanedResponse = cleanedResponse.replace(/```\s*/, '').replace(/\s*```$/, '');
       }
-      
+
       logger.log("Cleaned AI response", { cleanedResponse });
 
       // Parse AI response
@@ -229,8 +235,22 @@ export const validateCvDataTask = task({
         where: { id: validatedPayload.cvId },
         data: {
           validationStatus: overallStatus,
-          // eslint-disable-next-line @typescript-eslint/no-unsafe-assignment
-          validationResults: JSON.parse(JSON.stringify(processedResults)),
+          validationResults: {
+            fields: processedResults.fields.map(field => ({
+              field: field.field,
+              status: field.status,
+              confidence: field.confidence,
+              reason: field.reason,
+              extractedValue: field.extractedValue || null
+            })),
+            summary: {
+              totalChecked: processedResults.summary.totalChecked,
+              matchCount: processedResults.summary.matchCount,
+              partialMatchCount: processedResults.summary.partialMatchCount,
+              noMatchCount: processedResults.summary.noMatchCount,
+              overallConfidence: processedResults.summary.overallConfidence
+            }
+          },
           validationErrors: errors,
           validatedAt: new Date(),
         },
